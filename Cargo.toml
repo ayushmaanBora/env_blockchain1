@@ -4,12 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# --- UPDATED LIBP2P ---
-# We are replacing "derive" with the correct feature name: "macros"
-libp2p = { version = "0.53", features = ["gossipsub", "mdns", "noise", "tcp", "dns", "yamux", "identify", "tokio", "macros"] } 
-tokio = { version = "1.37.0", features = ["full"] }
-# --- END UPDATES ---
-
+# Core Logic
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -17,3 +12,13 @@ chrono = "0.4"
 rand = "0.8"
 bip39 = "1.1"
 futures = "0.3"
+
+# Networking (P2P)
+libp2p = { version = "0.53", features = ["gossipsub", "mdns", "noise", "tcp", "dns", "yamux", "identify", "tokio", "macros"] } 
+tokio = { version = "1.37.0", features = ["full"] }
+
+# Web API (New!)
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

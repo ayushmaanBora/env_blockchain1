@@ -25,6 +25,8 @@ impl Wallet {
     }
 }
 
+// --- ADDED #[derive(Default)] HERE ---
+#[derive(Default)] 
 pub struct WalletManager {
     wallets: HashMap<String, Wallet>,
 }
@@ -43,10 +45,8 @@ impl WalletManager {
 
         let mnemonic = Mnemonic::from_entropy(&entropy).expect("Failed to create mnemonic");
 
-        // --- THIS LINE IS CHANGED ---
-        let words = mnemonic.to_string(); // Use .to_string() to get the phrase
+        let words = mnemonic.to_string(); 
         println!("Mnemonic (save this!): {}", words);
-        // --- END CHANGE ---
 
         let address = crate::utils::hash_data(&format!("{:?}", entropy));
         let wallet = Wallet::new(address.clone());
@@ -56,6 +56,11 @@ impl WalletManager {
 
     pub fn get_mut_wallet(&mut self, address: &str) -> Option<&mut Wallet> {
         self.wallets.get_mut(address)
+    }
+
+    // Helper for API
+    pub fn get_all_wallets(&self) -> Vec<Wallet> {
+        self.wallets.values().cloned().collect()
     }
 
     pub fn view_wallets(&self) {

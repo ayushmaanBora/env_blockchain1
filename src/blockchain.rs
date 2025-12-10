@@ -6,7 +6,9 @@ use chrono::Utc;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io;
+use std::fs;
+
+const CHAIN_FILE: &str = "chain.json";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Block {
@@ -21,13 +23,7 @@ impl Block {
     pub fn new(index: u64, transactions: Vec<Transaction>, previous_hash: String) -> Self {
         let timestamp = Utc::now().timestamp();
         let hash = hash_data(&format!("{}{}{:?}{}", index, timestamp, transactions, previous_hash));
-        Self {
-            index,
-            timestamp,
-            transactions,
-            previous_hash,
-            hash,
-        }
+        Self { index, timestamp, transactions, previous_hash, hash }
     }
 }
 
@@ -38,38 +34,63 @@ pub enum NetworkMessage {
     ValidationResult(String, TaskStatus),
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Blockchain {
     pub chain: Vec<Block>,
+    // We skip saving these fields because they manage their own files (wallets.json) or are volatile
+    #[serde(skip)]
     pub wallets: WalletManager,
+    #[serde(skip)]
     pub marketplace: Marketplace,
+    
     pub stake_amount: u64,
     pub tasks_for_validation: Vec<Transaction>,
     pub tasks_for_mining: Vec<Transaction>,
-    // --- NEW: TRUST INFRASTRUCTURE ---
-    pub authorized_devices: HashSet<String>, // The "Registry" of allowed IoT IDs
+    
+    // These need to be saved to maintain security state
+    pub authorized_devices: HashSet<String>, 
+    pub used_evidence_urls: HashSet<String>, 
 }
 
 impl Blockchain {
     pub fn new() -> Self {
+        // 1. Try to load existing chain from disk
+        if let Ok(data) = fs::read_to_string(CHAIN_FILE) {
+            if let Ok(mut loaded_chain) = serde_json::from_str::<Blockchain>(&data) {
+                // Re-initialize the parts that weren't saved
+                loaded_chain.wallets = WalletManager::new();
+                loaded_chain.marketplace = Marketplace::new();
+                println!("📂 Loaded blockchain from '{}'", CHAIN_FILE);
+                return loaded_chain;
+            }
+        }
+
+        // 2. If no file, start fresh (Genesis)
         let genesis_block = Block::new(0, vec![], "0".to_string());
-        let wallets = WalletManager::new();
         
-        // Seed the registry with some "known good" device IDs (Public Keys)
         let mut authorized_devices = HashSet::new();
         authorized_devices.insert("yuki-iot-alpha-001".to_string());
         authorized_devices.insert("yuki-iot-beta-999".to_string());
-        // In a real app, this would be updated via Governance votes
-
+        
         Self {
             chain: vec![genesis_block],
-            wallets,
+            wallets: WalletManager::new(),
             marketplace: Marketplace::new(),
             stake_amount: 5,
             tasks_for_validation: Vec::new(),
             tasks_for_mining: Vec::new(),
             authorized_devices,
+            used_evidence_urls: HashSet::new(),
         }
     }
+
+    pub fn save_chain(&self) {
+        if let Ok(data) = serde_json::to_string(self) {
+            let _ = fs::write(CHAIN_FILE, data);
+        }
+    }
+
+    // --- REWARDS & VALIDATION LOGIC ---
 
     fn calculate_reward(&self, metadata_json: &str) -> u64 {
         let v: Value = match serde_json::from_str(metadata_json) {
@@ -89,79 +110,51 @@ impl Blockchain {
             Some("aqi_data") => 5,
             _ => 1,
         };
-
         if reward > 1000 { 1000 } else { reward }
     }
 
-    // --- AI & IOT VALIDATION LAYER ---
-
-    // Simulation of an AI Computer Vision Model
-    // Inputs: The evidence URL. 
-    // Outputs: A confidence score (0.0 to 1.0) and a detected label.
-    fn run_ai_inference(&self, image_url: &str, expected_type: &str) -> (f64, String) {
-        println!("   🤖 [AI Model] Analyzing image: {} ...", image_url);
-        
-        // TODO: Connect this to a Python microservice or ONNX runtime
-        // For simulation, we'll check if the URL contains "fake" to simulate a fail.
-        if image_url.contains("fake") || image_url.contains("stock") {
-            return (0.05, "stock_photo_detected".to_string());
+    fn run_decentralized_ai_check(&self, image_url: &str, task_type: &str) -> (f64, String) {
+        if image_url.contains("fake") || image_url.contains("stock") || image_url.is_empty() {
+            return (0.01, "flagged_keyword".to_string());
         }
-
-        // Simulate success for valid-looking inputs
-        match expected_type {
-            "tree_planting" => (0.98, "sapling_planted".to_string()),
-            "plastic_recycling" => (0.92, "plastic_waste".to_string()),
-            _ => (0.5, "unknown_object".to_string()),
-        }
+        // Deterministic hash-based scoring
+        let input = format!("{}{}", image_url, task_type);
+        let hash = hash_data(&input);
+        let score_byte = u8::from_str_radix(&hash[0..2], 16).unwrap_or(0);
+        let confidence = score_byte as f64 / 255.0;
+        let label = if confidence > 0.8 { "verified_match" } else if confidence > 0.5 { "uncertain" } else { "no_match_detected" };
+        (confidence, label.to_string())
     }
 
-    // Simulation of Cryptographic Signature Verification
-    fn verify_iot_device(&self, device_id: &str) -> bool {
-        // Check if the device is in our "Trusted Registry"
-        self.authorized_devices.contains(device_id)
-    }
-
-    // --- UPDATED SMART CHECK ---
-    fn run_smart_security_check(&self, metadata: &Value) -> (bool, String) {
-        
-        // 1. IoT Device Verification (The "Authorized Device ID" check)
+    fn run_smart_contract_validation(&self, metadata: &Value) -> (bool, String) {
+        // 1. Anti-Replay
+        if let Some(url) = metadata["evidence"].as_str() {
+            if self.used_evidence_urls.contains(url) {
+                return (false, "⚠️ REPLAY ATTACK: Evidence already used.".to_string());
+            }
+        }
+        // 2. IoT Signature
         if let Some(task_type) = metadata["type"].as_str() {
             if task_type == "aqi_data" {
                 if let Some(dev_id) = metadata["device_id"].as_str() {
-                    if !self.verify_iot_device(dev_id) {
-                         return (false, format!("⚠️  UNAUTHORIZED DEVICE: ID '{}' is not in the trusted registry.", dev_id));
+                    if !self.authorized_devices.contains(dev_id) {
+                         return (false, format!("⚠️ UNAUTHORIZED DEVICE: '{}'", dev_id));
                     }
-                } else {
-                    return (false, "⚠️  MISSING ID: AQI tasks must include a Device ID.".to_string());
-                }
+                } else { return (false, "⚠️ INVALID PACKET: Missing Device ID".to_string()); }
             }
         }
-
-        // 2. AI Computer Vision Check
+        // 3. AI Check
         if let Some(task_type) = metadata["type"].as_str() {
             if task_type == "tree_planting" || task_type == "plastic_recycling" {
                 if let Some(url) = metadata["evidence"].as_str() {
-                    let (confidence, label) = self.run_ai_inference(url, task_type);
-                    
-                    println!("   🤖 [AI Result] Label: '{}', Confidence: {:.2}%", label, confidence * 100.0);
-
-                    if confidence < 0.70 {
-                        return (false, format!("⚠️  AI REJECTION: Image does not appear to match task (Confidence: {:.1}%).", confidence * 100.0));
+                    let (confidence, label) = self.run_decentralized_ai_check(url, task_type);
+                    if confidence < 0.80 {
+                        return (false, format!("⚠️ AI REJECTION: {:.1}% ({})", confidence * 100.0, label));
                     }
-                } else {
-                    return (false, "⚠️  MISSING PROOF: Photo evidence URL is required.".to_string());
                 }
             }
         }
-
-        // 3. Anomaly Detection (Logic Check)
-        if let Some(count) = metadata["count"].as_u64() {
-            if count > 500 {
-                return (false, "⚠️  ANOMALY: Claiming >500 trees in one task is statistically improbable.".to_string());
-            }
-        }
-
-        (true, "✅ Automated Checks Passed.".to_string())
+        (true, "✅ Validation Passed.".to_string())
     }
 
     pub fn submit_task(&mut self, wallet_address: &str, task: String, proof_metadata: String) -> Option<Transaction> {
@@ -171,102 +164,52 @@ impl Blockchain {
                 return None;
             }
             wallet.balance_yuki -= self.stake_amount;
-
             let calculated_reward = self.calculate_reward(&proof_metadata);
-
-            let transaction = Transaction::new(
-                wallet_address.to_string(),
-                "System-Reward-Pool".to_string(),
-                calculated_reward,
-                task,
-                proof_metadata,
-            );
+            let transaction = Transaction::new(wallet_address.to_string(), "System-Reward-Pool".to_string(), calculated_reward, task, proof_metadata);
             
             self.tasks_for_validation.push(transaction.clone());
-
-            println!("✅ Task submitted! Potential Reward: {} Yuki. Stake held.", calculated_reward);
+            self.save_chain(); // SAVE STATE
             self.wallets.save_wallets();
             Some(transaction)
         } else {
-            println!("❌ Wallet not found.");
             None
         }
     }
-    
-    pub fn validate_pending_tasks(&mut self) -> Vec<(String, TaskStatus)> {
-        let mut results = Vec::new();
-        if self.tasks_for_validation.is_empty() {
-            println!("No tasks are waiting for validation.");
-            return results;
-        }
 
-        println!("\n--- 🕵️ SMART VALIDATION CONSOLE ---");
+    pub fn run_automated_validation(&mut self) -> Vec<(String, TaskStatus)> {
+        let mut results = Vec::new();
         for i in (0..self.tasks_for_validation.len()).rev() {
-            let task = &self.tasks_for_validation[i];
-            
-            println!("\n--------------------------------");
-            println!("Task ID: {}", task.task);
-            println!("User:    {}", task.sender);
-            println!("Claim:   {} Yuki", task.amount);
-            
-            let mut auto_check_passed = true;
-            let mut auto_check_msg = String::new();
+            let task = self.tasks_for_validation[i].clone();
+            let mut is_valid = false;
+            let mut reason = "Unknown".to_string();
 
             if let Ok(v) = serde_json::from_str::<Value>(&task.proof_metadata) {
-                // RUN THE AUTOMATED SECURITY CHECK
-                let (passed, msg) = self.run_smart_security_check(&v);
-                auto_check_passed = passed;
-                auto_check_msg = msg;
-
-                // Display data...
-                if let Some(t) = v["type"].as_str() { println!("   Type:   {}", t); }
-                if let Some(c) = v["count"].as_u64() { println!("   Count:  {}", c); }
-                if let Some(d) = v["device_id"].as_str() { println!("   Device: {}", d); }
-                if let Some(l) = v["location"].as_str() { println!("   GPS:    {}", l); }
+                let (passed, msg) = self.run_smart_contract_validation(&v);
+                is_valid = passed;
+                reason = msg;
+                if passed { if let Some(url) = v["evidence"].as_str() { self.used_evidence_urls.insert(url.to_string()); } }
             }
             
-            println!("\n🔍 SYSTEM REPORT: {}", auto_check_msg);
-            println!("--------------------------------");
-            
-            if !auto_check_passed {
-                println!("⚠️  RECOMMENDATION: REJECT (AI/Security Flagged)");
+            if is_valid {
+                println!("\n[AUTO-VALIDATOR] Task {} APPROVED: {}", task.task, reason);
+                let mut validated_task = self.tasks_for_validation.remove(i);
+                validated_task.status = TaskStatus::Validated;
+                self.tasks_for_mining.push(validated_task);
+                results.push((task.task, TaskStatus::Validated));
             } else {
-                println!("✅ RECOMMENDATION: APPROVE");
-            }
-
-            println!("Action: (A)pprove / (R)eject / (S)kip");
-
-            let mut choice = String::new();
-            io::stdin().read_line(&mut choice).unwrap();
-            
-            match choice.trim().to_lowercase().as_str() {
-                "a" | "approve" => {
-                    let mut validated_task = self.tasks_for_validation.remove(i);
-                    validated_task.status = TaskStatus::Validated;
-                    println!("✅ APPROVED. User rewarded.");
-                    results.push((validated_task.task.clone(), validated_task.status.clone()));
-                    self.tasks_for_mining.push(validated_task);
-                }
-                "r" | "reject" => {
-                    let rejected_task = self.tasks_for_validation.remove(i);
-                    println!("❌ REJECTED. Stake forfeited.");
-                    results.push((rejected_task.task.clone(), TaskStatus::Rejected));
-                    self.wallets.save_wallets();
-                }
-                _ => println!("Skipped."),
+                println!("\n[AUTO-VALIDATOR] Task {} REJECTED: {}", task.task, reason);
+                let _ = self.tasks_for_validation.remove(i);
+                results.push((task.task, TaskStatus::Rejected));
+                self.wallets.save_wallets(); // Burn stake
             }
         }
+        self.save_chain(); // SAVE STATE
         results
     }
 
     pub fn mine_block(&mut self) -> Option<Block> {
-        if self.tasks_for_mining.is_empty() {
-            println!("No validated tasks to mine.");
-            return None;
-        }
-
+        if self.tasks_for_mining.is_empty() { return None; }
         let mut transactions_for_block = Vec::new();
-        
         while let Some(mut task) = self.tasks_for_mining.pop() {
             if let Some(wallet) = self.wallets.get_mut_wallet(&task.sender) {
                 wallet.balance_yuki += task.amount + self.stake_amount;
@@ -274,95 +217,58 @@ impl Blockchain {
                 transactions_for_block.push(task);
             }
         }
-        
         if transactions_for_block.is_empty() { return None; }
-
         let previous_block = self.chain.last().unwrap();
-        let new_block = Block::new(
-            previous_block.index + 1,
-            transactions_for_block,
-            previous_block.hash.clone(),
-        );
-
+        let new_block = Block::new(previous_block.index + 1, transactions_for_block, previous_block.hash.clone());
         println!("✅ New block {} mined!", new_block.hash);
         self.chain.push(new_block.clone());
+        
+        self.save_chain(); // SAVE STATE
         self.wallets.save_wallets();
         Some(new_block)
     }
 
+    // Helper functions needed by API and P2P
+    pub fn create_wallet(&mut self) -> Wallet {
+        let w = self.wallets.create_wallet();
+        self.wallets.save_wallets();
+        w
+    }
+    pub fn view_wallets(&self) { self.wallets.view_wallets(); }
+    pub fn marketplace_menu(&mut self) { self.marketplace.menu(&mut self.wallets); }
+    
     pub fn add_block_from_network(&mut self, block: Block) {
         let previous_block = self.chain.last().unwrap();
         if block.previous_hash == previous_block.hash {
-            println!("Received valid block {} from network. Adding to chain.", block.hash);
             for tx in &block.transactions {
                 self.tasks_for_mining.retain(|t| t.task != tx.task);
                 self.tasks_for_validation.retain(|t| t.task != tx.task);
             }
             self.chain.push(block);
+            self.save_chain();
             self.wallets.save_wallets(); 
         }
     }
-
-    pub fn add_task_from_network(&mut self, tx: Transaction) {
-        if !self.tasks_for_validation.iter().any(|t| t.task == tx.task) &&
-           !self.tasks_for_mining.iter().any(|t| t.task == tx.task) {
-            println!("Received new task from network. Adding to validation pool.");
-            self.tasks_for_validation.push(tx);
-        }
+    pub fn add_task_from_network(&mut self, tx: Transaction) { 
+        if !self.tasks_for_validation.iter().any(|t| t.task == tx.task) { self.tasks_for_validation.push(tx); } 
     }
-
     pub fn update_task_status_from_network(&mut self, task_id: &str, status: TaskStatus) {
-        if let Some(pos) = self.tasks_for_validation.iter().position(|t| t.task == task_id) {
+         if let Some(pos) = self.tasks_for_validation.iter().position(|t| t.task == task_id) {
             match status {
-                TaskStatus::Validated => {
-                    let task = self.tasks_for_validation.remove(pos);
-                    self.tasks_for_mining.push(task);
-                }
-                TaskStatus::Rejected => {
-                    self.tasks_for_validation.remove(pos);
-                }
+                TaskStatus::Validated => { let t = self.tasks_for_validation.remove(pos); self.tasks_for_mining.push(t); }
+                TaskStatus::Rejected => { self.tasks_for_validation.remove(pos); }
                 _ => {}
             }
-        }
+         }
     }
-
     pub fn convert_yuki_to_yg(&mut self, wallet_address: &str, amount: u64) {
-        if let Some(wallet) = self.wallets.get_mut_wallet(wallet_address) {
-            if wallet.balance_yuki < amount {
-                println!("❌ Insufficient Yuki balance.");
-                return;
-            }
-            wallet.balance_yuki -= amount;
-            wallet.balance_yg += amount;
-            self.wallets.save_wallets();
-            println!("✅ Converted {} Yuki to YG.", amount);
-        }
+         if let Some(wallet) = self.wallets.get_mut_wallet(wallet_address) {
+            if wallet.balance_yuki >= amount { wallet.balance_yuki -= amount; wallet.balance_yg += amount; self.wallets.save_wallets(); }
+         }
     }
-
     pub fn convert_yuki_to_yt(&mut self, wallet_address: &str, amount: u64) {
-        if let Some(wallet) = self.wallets.get_mut_wallet(wallet_address) {
-            if wallet.balance_yuki < amount {
-                println!("❌ Insufficient Yuki balance.");
-                return;
-            }
-            wallet.balance_yuki -= amount;
-            wallet.balance_yt += amount;
-            self.wallets.save_wallets();
-            println!("✅ Converted {} Yuki to YT.", amount);
-        }
-    }
-
-    pub fn create_wallet(&mut self) -> Wallet {
-        let wallet = self.wallets.create_wallet();
-        self.wallets.save_wallets();
-        wallet
-    }
-
-    pub fn view_wallets(&self) {
-        self.wallets.view_wallets();
-    }
-
-    pub fn marketplace_menu(&mut self) {
-        self.marketplace.menu(&mut self.wallets);
+         if let Some(wallet) = self.wallets.get_mut_wallet(wallet_address) {
+            if wallet.balance_yuki >= amount { wallet.balance_yuki -= amount; wallet.balance_yt += amount; self.wallets.save_wallets(); }
+         }
     }
 }
