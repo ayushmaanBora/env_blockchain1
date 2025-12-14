@@ -4,10 +4,8 @@ use axum::{
 };
 use std::sync::{Arc, Mutex};
 use crate::blockchain::Blockchain;
-use crate::transaction::Transaction;
 use tower_http::cors::CorsLayer;
 
-// Shared state for the API to access the blockchain
 pub struct AppState {
     pub blockchain: Arc<Mutex<Blockchain>>,
 }
@@ -19,7 +17,7 @@ pub async fn start_api_server(blockchain: Arc<Mutex<Blockchain>>) {
         .route("/chain", get(get_chain))
         .route("/wallets", get(get_wallets))
         .route("/submit", post(submit_task_api))
-        .layer(CorsLayer::permissive()) // Allow browsers to access
+        .layer(CorsLayer::permissive()) 
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3030").await.unwrap();
@@ -27,19 +25,16 @@ pub async fn start_api_server(blockchain: Arc<Mutex<Blockchain>>) {
     axum::serve(listener, app).await.unwrap();
 }
 
-// Handler: Get the full blockchain
 async fn get_chain(State(state): State<Arc<AppState>>) -> Json<Vec<crate::blockchain::Block>> {
     let chain = state.blockchain.lock().unwrap().chain.clone();
     Json(chain)
 }
 
-// Handler: Get all wallets (For demo purposes)
 async fn get_wallets(State(state): State<Arc<AppState>>) -> Json<Vec<crate::wallet::Wallet>> {
     let wallets = state.blockchain.lock().unwrap().wallets.get_all_wallets();
     Json(wallets)
 }
 
-// Handler: Submit a task via JSON
 #[derive(serde::Deserialize)]
 struct SubmitRequest {
     wallet: String,
@@ -52,7 +47,9 @@ async fn submit_task_api(
     Json(payload): Json<SubmitRequest>,
 ) -> Json<String> {
     let mut bc = state.blockchain.lock().unwrap();
-    if let Some(_) = bc.submit_task(&payload.wallet, payload.task_name, payload.metadata) {
+    
+    // FIX: Changed function name to match the new Industrial logic
+    if let Some(_) = bc.submit_industrial_task(&payload.wallet, payload.task_name, payload.metadata) {
         Json("Task Submitted successfully".to_string())
     } else {
         Json("Submission failed".to_string())

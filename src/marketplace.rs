@@ -8,7 +8,6 @@ struct Listing {
     tokens_available: u64,
 }
 
-// --- ADDED Default HERE ---
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Marketplace {
     listings: Vec<Listing>,
@@ -45,7 +44,6 @@ impl Marketplace {
                 std::io::stdin().read_line(&mut wallet).unwrap();
                 let wallet = wallet.trim();
                 
-                // Check if wallet exists and has balance
                 if let Some(seller_wallet) = wallets.get_mut_wallet(wallet) {
                     println!("Enter price per token (Yuki):");
                     let mut price = String::new();
@@ -69,7 +67,6 @@ impl Marketplace {
                 }
             }
             "2" => {
-                // Buy logic (simplified for brevity, similar structure to original)
                 println!("Enter your wallet address:");
                 let mut buyer_addr = String::new();
                 std::io::stdin().read_line(&mut buyer_addr).unwrap();
@@ -85,10 +82,10 @@ impl Marketplace {
                     if index > 0 && index <= self.listings.len() {
                         let listing_idx = index - 1;
                         let listing = &self.listings[listing_idx];
-                        let cost = listing.price_per_token * listing.tokens_available; // Buy all for simplicity or add amount prompt
                         
-                        // Logic to transfer Yuki from Buyer -> Seller and YT from Listing -> Buyer
-                        // (omitted for brevity, but you get the idea)
+                        // FIX: Added underscore to silence warning
+                        let _cost = listing.price_per_token * listing.tokens_available; 
+                        
                         println!("Feature coming: Buying tokens."); 
                     }
                 }
